@@ -6,18 +6,19 @@ import threading
 import subprocess
 
 import pyaudio
-import whisper
+from tools.audiofile import AudioFile
 
-from langchain.prompts import PromptTemplate
-from langchain_community.llms import LlamaCpp
-from langchain.callbacks.base import BaseCallbackHandler, BaseCallbackManager
+from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain.callbacks.base import BaseCallbackHandler
 
-LANG = "EN" # CN for Chinese, EN for English
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEBUG = True
-
-# Model Configuration
-WHISP_PATH = "models/whisper-large-v3"
-MODEL_PATH = "models/yi-34b-chat.Q8_0.gguf" # Or models/yi-chat-6b.Q8_0.gguf
 
 # Recording Configuration
 CHUNK = 1024
@@ -26,7 +27,7 @@ CHANNELS = 1
 RATE = 44100
 SILENCE_THRESHOLD = 500
 SILENT_CHUNKS = 2 * RATE / CHUNK  # two seconds of silence marks the end of user voice input
-MIC_IDX = 0 # Set microphone id. Use tools/list_microphones.py to see a device list.
+MIC_IDX = 1 # Set microphone id. Use tools/list_microphones.py to see a device list.
 
 def compute_rms(data):
     # Assuming data is in 16-bit samples
@@ -73,7 +74,6 @@ def record_audio():
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
     def __init__(self):
-        self.generated_text = ""
         self.lock = threading.Lock()
         self.speech_queue = queue.Queue()
         self.worker_thread = threading.Thread(target=self.process_queue)
@@ -81,17 +81,11 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         self.worker_thread.start()
         self.tts_busy = False
 
-    def on_llm_new_token(self, token, **kwargs):
+    def on_llm_end(self, response, **kwargs):
+        # print("on_llm_new_token() called")
         # Append the token to the generated text
         with self.lock:
-            self.generated_text += token
-
-        # Check if the token is the end of a sentence
-        if token in ['.', '。', '!', '！', '?', '？']:
-            with self.lock:
-                # Put the complete sentence in the queue
-                self.speech_queue.put(self.generated_text)
-                self.generated_text = ""
+            self.speech_queue.put(response.generations[0][0].text)
 
     def process_queue(self):
         while True:
@@ -108,40 +102,30 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
 
     def text_to_speech(self, text):
         try:
-            if LANG == "CN":
-                subprocess.call(["say", "-r", "200", "-v", "TingTing", text])
-            else:
-                subprocess.call(["say", "-r", "180", "-v", "Karen", text])
+            print("Creating audio")
+            time_ckpt = time.time()
+            with client.audio.speech.with_streaming_response.create(
+                model="tts-1",
+                voice="nova",
+                input=text,
+                response_format='wav'
+            ) as response:
+                response.stream_to_file("responses/output.wav")
+
+
+            print("Reproducing audio file (Time %d ms)" % ((time.time() - time_ckpt) * 1000))
+            audio_file = AudioFile("responses/output.wav")
+            audio_file.play()
+            audio_file.close()
         except Exception as e:
             print(f"Error in text-to-speech: {e}")
 
 
 if __name__ == '__main__':
-    if LANG == "CN":
-        prompt_path = "prompts/example-cn.txt"
-    else:
-        prompt_path = "prompts/example-en.txt"
-    with open(prompt_path, 'r', encoding='utf-8') as file:
-        template = file.read().strip() # {dialogue}
-    prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
-
     # Create an instance of the VoiceOutputCallbackHandler
     voice_output_handler = VoiceOutputCallbackHandler()
 
-    # Create a callback manager with the voice output handler
-    callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
-
-    llm = LlamaCpp(
-        model_path=MODEL_PATH,
-        n_gpu_layers=1, # Metal set to 1 is enough.
-        n_batch=512,    # Should be between 1 and n_ctx, consider the amount of RAM of your Apple Silicon Chip.
-        n_ctx=4096,     # Update the context window size to 4096
-        f16_kv=True,    # MUST set to True, otherwise you will run into problem after a couple of calls
-        callback_manager=callback_manager,
-        stop=["<|im_end|>"],
-        verbose=False,
-    )
-    dialogue = ""
+    dialogue = [{"role": "system", "content": "You're a helpful server in a waffle shop in Santo Domingo."}]
     try:
         while True:
             if voice_output_handler.tts_busy:  # Check if TTS is busy
@@ -151,7 +135,15 @@ if __name__ == '__main__':
                 record_audio()
                 print("Transcribing...")
                 time_ckpt = time.time()
-                user_input = whisper.transcribe("recordings/output.wav", path_or_hf_repo=WHISP_PATH)["text"]
+
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                audio_file = open("recordings/output.wav", "rb")
+                transcription = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="en"
+                )
+                user_input = transcription.text
                 print("%s: %s (Time %d ms)" % ("Guest", user_input, (time.time() - time_ckpt) * 1000))
             
             except subprocess.CalledProcessError:
@@ -159,12 +151,23 @@ if __name__ == '__main__':
                 continue
             time_ckpt = time.time()
             print("Generating...")
-            dialogue += "*Q* {}\n".format(user_input)
-            prompt = prompt_template.format(dialogue=dialogue)
-            reply = llm(prompt, max_tokens=4096)
+            dialogue.append({"role": "user", "content": user_input})
+
+            llm = ChatOpenAI(
+                model="gpt-4o",
+                temperature=0,
+                max_tokens=None,
+                timeout=None,
+                max_retries=2,
+                api_key=OPENAI_API_KEY,
+                callbacks=[voice_output_handler]
+            )
+            
+            reply = llm.invoke(dialogue)
+            dialogue.append({"role": "assistant", "content": reply.content})
+
             if reply is not None:
                 voice_output_handler.speech_queue.put(None)
-                dialogue += "*A* {}\n".format(reply)
-                print("%s: %s (Time %d ms)" % ("Server", reply.strip(), (time.time() - time_ckpt) * 1000))
+                print("%s: %s (Time %d ms)" % ("Server", reply.content, (time.time() - time_ckpt) * 1000))
     except KeyboardInterrupt:
         pass
