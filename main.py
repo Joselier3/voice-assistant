@@ -9,6 +9,7 @@ import pyaudio
 from tools.audiofile import AudioFile
 
 from openai import OpenAI
+from groq import Groq
 from langchain_groq import ChatGroq
 from langchain.callbacks.base import BaseCallbackHandler
 
@@ -109,6 +110,7 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         try:
             print("Creating audio")
             time_ckpt = time.time()
+            client = OpenAI(api_key=OPENAI_API_KEY)
             with client.audio.speech.with_streaming_response.create(
                 model="tts-1",
                 voice="nova",
@@ -130,7 +132,9 @@ if __name__ == '__main__':
     # Create an instance of the VoiceOutputCallbackHandler
     voice_output_handler = VoiceOutputCallbackHandler()
 
-    dialogue = [{"role": "system", "content": "You're a helpful server in a waffle shop in Santo Domingo."}]
+    dialogue = [
+        {"role": "system", 
+         "content": "You're a helpful server in a waffle shop in Santo Domingo. Keep your answers short"}]
     try:
         while True:
             if voice_output_handler.tts_busy:  # Check if TTS is busy
@@ -141,22 +145,27 @@ if __name__ == '__main__':
                 print("Transcribing...")
                 time_ckpt = time.time()
 
-                client = OpenAI(api_key=OPENAI_API_KEY)
-                audio_file = open("recordings/output.wav", "rb")
-                transcription = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    language="en"
-                )
+                client = Groq()
+                filename = "recordings/output.wav"
+
+                with open(filename, "rb") as file:
+                    transcription = client.audio.transcriptions.create(
+                        file=(filename, file.read()),
+                        model="whisper-large-v3",
+                        response_format="json",
+                        language="en",
+                        temperature=0.0
+                    )
+
                 user_input = transcription.text
                 print("%s: %s (Time %d ms)" % ("Guest", user_input, (time.time() - time_ckpt) * 1000))
             
             except subprocess.CalledProcessError:
                 print("voice recognition failed, please try again")
                 continue
+
             time_ckpt = time.time()
             print("Generating...")
-            dialogue.append({"role": "user", "content": user_input})
 
             llm = ChatGroq(
                 model="llama3-8b-8192",
@@ -167,6 +176,8 @@ if __name__ == '__main__':
                 api_key=GROQ_API_KEY,
                 callbacks=[voice_output_handler]
             )
+
+            dialogue.append({"role": "user", "content": user_input})
             
             reply = llm.invoke(dialogue)
             dialogue.append({"role": "assistant", "content": reply.content})
