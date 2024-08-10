@@ -13,6 +13,11 @@ from groq import Groq
 from langchain_groq import ChatGroq
 from langchain.callbacks.base import BaseCallbackHandler
 
+from deepgram import (
+    DeepgramClient,
+    SpeakOptions,
+)
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -110,17 +115,17 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         try:
             print("Creating audio")
             time_ckpt = time.time()
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            with client.audio.speech.with_streaming_response.create(
-                model="tts-1",
-                voice="nova",
-                input=text,
-                response_format='wav'
-            ) as response:
-                response.stream_to_file("responses/output.wav")
-
+            
+            deepgram = DeepgramClient(api_key=os.getenv("DG_API_KEY"))
+            options = SpeakOptions(
+                model="aura-asteria-en",
+                encoding="linear16",
+                container="wav"
+            )
+            response = deepgram.speak.v("1").save("responses/output.wav", {"text": text}, options)
 
             print("Reproducing audio file (Time %d ms)" % ((time.time() - time_ckpt) * 1000))
+
             audio_file = AudioFile("responses/output.wav")
             audio_file.play()
             audio_file.close()
