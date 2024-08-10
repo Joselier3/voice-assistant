@@ -41,7 +41,12 @@ def compute_rms(data):
 
 def record_audio():
     audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, input_device_index=MIC_IDX, frames_per_buffer=CHUNK)
+    stream = audio.open(format=FORMAT, 
+                        channels=CHANNELS, 
+                        rate=RATE, 
+                        input=True, 
+                        input_device_index=MIC_IDX, 
+                        frames_per_buffer=CHUNK)
 
     silent_chunks = 0
     audio_started = False
