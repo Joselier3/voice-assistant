@@ -9,7 +9,7 @@ import pyaudio
 from tools.audiofile import AudioFile
 
 from openai import OpenAI
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain.callbacks.base import BaseCallbackHandler
 
 import os
@@ -153,13 +153,13 @@ if __name__ == '__main__':
             print("Generating...")
             dialogue.append({"role": "user", "content": user_input})
 
-            llm = ChatOpenAI(
-                model="gpt-4o",
+            llm = ChatGroq(
+                model="llama3-8b-8192",
                 temperature=0,
                 max_tokens=None,
                 timeout=None,
                 max_retries=2,
-                api_key=OPENAI_API_KEY,
+                api_key=GROQ_API_KEY,
                 callbacks=[voice_output_handler]
             )
             
